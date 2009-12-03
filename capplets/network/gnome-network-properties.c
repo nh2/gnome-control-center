@@ -32,19 +32,11 @@
 #include "capplet-util.h"
 #include "gconf-property-editor.h"
 
-enum ProxyMode
-{
-	PROXYMODE_NONE,
-	PROXYMODE_MANUAL,
-	PROXYMODE_AUTO
-};
-
-static GEnumValue proxytype_values[] = {
-	{ PROXYMODE_NONE, "PROXYMODE_NONE", "none"},
-	{ PROXYMODE_MANUAL, "PROXYMODE_MANUAL", "manual"},
-	{ PROXYMODE_AUTO, "PROXYMODE_AUTO", "auto"},
-	{ 0, NULL, NULL }
-};
+/* Novell extension */
+#define KEY_USE_SYSTEM_SETTINGS			"/system/proxy/use_system_settings"		/* string */
+#define VAL_USE_SYSTEM_SETTINGS_ONLY_IF_NOT_SET	"only_if_mode_not_set"
+#define VAL_USE_SYSTEM_SETTINGS_SYSTEM_VALUES	"system_values"
+#define VAL_USE_SYSTEM_SETTINGS_USER_VALUES	"user_values"
 
 enum {
 	COL_NAME,
@@ -1068,36 +1060,58 @@ extract_proxy_host (GConfPropertyEditor *peditor, const GConfValue *orig)
 }
 
 static void
+set_sensitivity_based_on_active_radiobutton (GtkBuilder *builder, GtkWidget *active_radio)
+{
+ 	gboolean manual_box_sensitive, auto_box_sensitive;
+
+  	g_assert (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (active_radio)));
+
+	manual_box_sensitive = auto_box_sensitive = FALSE;
+
+	if (active_radio == _gtk_builder_get_widget (builder, "manual_radiobutton"))
+ 		manual_box_sensitive = TRUE;
+ 	else if (active_radio == _gtk_builder_get_widget (builder, "auto_radiobutton"))
+ 		auto_box_sensitive = TRUE;
+
+ 	gtk_widget_set_sensitive (_gtk_builder_get_widget (builder, "manual_box"), manual_box_sensitive);
+	gtk_widget_set_sensitive (_gtk_builder_get_widget (builder, "same_proxy_checkbutton"), manual_box_sensitive);
+ 	gtk_widget_set_sensitive (_gtk_builder_get_widget (builder, "auto_box"), auto_box_sensitive);
+}
+ 
+static void
 proxy_mode_radiobutton_clicked_cb (GtkWidget *widget,
 				   GtkBuilder *builder)
 {
-	GSList *mode_group;
-	int mode;
-	GConfClient *client;
+  	GConfClient *client;
 
-	if (!gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON(widget)))
-		return;
-
-	mode_group = g_slist_copy (gtk_radio_button_get_group
-		(GTK_RADIO_BUTTON (gtk_builder_get_object (builder, "none_radiobutton"))));
-	mode_group = g_slist_reverse (mode_group);
-	mode = g_slist_index (mode_group, widget);
-	g_slist_free (mode_group);
-
-	gtk_widget_set_sensitive (_gtk_builder_get_widget (builder, "manual_box"),
-				  mode == PROXYMODE_MANUAL);
-	gtk_widget_set_sensitive (_gtk_builder_get_widget (builder, "same_proxy_checkbutton"),
-				  mode == PROXYMODE_MANUAL);
-	gtk_widget_set_sensitive (_gtk_builder_get_widget (builder, "auto_box"),
-				  mode == PROXYMODE_AUTO);
+  	if (!gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON(widget)))
+  		return;
+     
 	client = gconf_client_get_default ();
-	gconf_client_set_bool (client, USE_PROXY_KEY,
-				  mode == PROXYMODE_AUTO || mode == PROXYMODE_MANUAL, NULL);
-	g_object_unref (client);
+     
+ 	if (widget == _gtk_builder_get_widget (builder, "system_radiobutton")) {
+ 		gconf_client_set_string (client, KEY_USE_SYSTEM_SETTINGS, VAL_USE_SYSTEM_SETTINGS_SYSTEM_VALUES, NULL);
+ 	} else if (widget == _gtk_builder_get_widget (builder, "none_radiobutton")) {
+ 		gconf_client_set_string (client, KEY_USE_SYSTEM_SETTINGS, VAL_USE_SYSTEM_SETTINGS_USER_VALUES, NULL);
+ 		gconf_client_set_string (client, PROXY_MODE_KEY, "none", NULL);
+ 		gconf_client_set_bool (client, USE_PROXY_KEY, FALSE, NULL);
+ 	} else if (widget == _gtk_builder_get_widget (builder, "manual_radiobutton")) {
+ 		gconf_client_set_string (client, KEY_USE_SYSTEM_SETTINGS, VAL_USE_SYSTEM_SETTINGS_USER_VALUES, NULL);
+ 		gconf_client_set_string (client, PROXY_MODE_KEY, "manual", NULL);
+ 		gconf_client_set_bool (client, USE_PROXY_KEY, TRUE, NULL);
+ 	} else if (widget == _gtk_builder_get_widget (builder, "auto_radiobutton")) {
+ 		gconf_client_set_string (client, KEY_USE_SYSTEM_SETTINGS, VAL_USE_SYSTEM_SETTINGS_USER_VALUES, NULL);
+ 		gconf_client_set_string (client, PROXY_MODE_KEY, "auto", NULL);
+ 		gconf_client_set_bool (client, USE_PROXY_KEY, TRUE, NULL);
+ 	}
+     
+	set_sensitivity_based_on_active_radiobutton (builder, widget);
+ 
+  	g_object_unref (client);
 }
 
 static void
-connect_sensitivity_signals (GtkBuilder *builder, GSList *mode_group)
+connect_mode_radiobuttons (GtkBuilder *builder, GSList *mode_group)
 {
 	for (; mode_group != NULL; mode_group = mode_group->next)
 	{
@@ -1105,6 +1119,74 @@ connect_sensitivity_signals (GtkBuilder *builder, GSList *mode_group)
 				  G_CALLBACK(proxy_mode_radiobutton_clicked_cb),
 				  builder);
 	}
+}
+
+static GtkWidget *
+get_radio_for_mode (GtkBuilder *builder, const char *mode_str)
+{
+ 	if (!mode_str)
+ 		return _gtk_builder_get_widget (builder, "none_radiobutton");
+ 	else if (strcmp (mode_str, "none") == 0)
+ 		return _gtk_builder_get_widget (builder, "none_radiobutton");
+ 	else if (strcmp (mode_str, "manual") == 0)
+ 		return _gtk_builder_get_widget (builder, "manual_radiobutton");
+ 	else if (strcmp (mode_str, "auto") == 0)
+ 		return _gtk_builder_get_widget (builder, "auto_radiobutton");
+ 	else
+ 		return _gtk_builder_get_widget (builder, "none_radiobutton");
+}
+
+static void
+mode_set_initial_value (GtkBuilder *builder, GConfClient *client)
+{
+ 	char *use_system_settings;
+ 	GConfValue *mode_value;
+ 	gboolean use_system_if_mode_not_set;
+ 	gboolean use_mode;
+ 	GtkWidget *radiobutton;
+ 
+ 	radiobutton = NULL;
+ 
+ 	use_system_settings = gconf_client_get_string (client, KEY_USE_SYSTEM_SETTINGS, NULL);
+ 	mode_value = gconf_client_get_without_default (client, PROXY_MODE_KEY, NULL);
+ 
+ 	use_system_if_mode_not_set = FALSE;
+ 	use_mode = FALSE;
+ 
+ 	if (!use_system_settings)
+ 		use_system_if_mode_not_set = TRUE;
+ 	else {
+ 		if (strcmp (use_system_settings, VAL_USE_SYSTEM_SETTINGS_ONLY_IF_NOT_SET) == 0)
+ 			use_system_if_mode_not_set = TRUE;
+ 		else if (strcmp (use_system_settings, VAL_USE_SYSTEM_SETTINGS_SYSTEM_VALUES) == 0)
+ 			radiobutton = _gtk_builder_get_widget (builder, "system_radiobutton");
+ 		else if (strcmp (use_system_settings, VAL_USE_SYSTEM_SETTINGS_USER_VALUES) == 0)
+ 			use_mode = TRUE;
+ 
+ 		g_free (use_system_settings);
+ 	}
+ 
+ 	if (use_system_if_mode_not_set) {
+ 		if (mode_value)
+ 			use_mode = TRUE;
+ 		else
+ 			radiobutton = _gtk_builder_get_widget (builder, "system_radiobutton");
+ 	}
+ 
+ 	if (use_mode) {
+ 		if (!mode_value || mode_value->type != GCONF_VALUE_STRING)
+			radiobutton = _gtk_builder_get_widget (builder, "none_radiobutton");
+ 		else
+ 			radiobutton = get_radio_for_mode (builder, gconf_value_get_string (mode_value));
+ 	}
+ 
+ 	if (radiobutton) {
+		gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (radiobutton), TRUE);
+		set_sensitivity_based_on_active_radiobutton (builder, radiobutton);
+	}
+ 
+ 	if (mode_value)
+ 		gconf_value_free (mode_value);
 }
 
 static void
@@ -1125,15 +1207,11 @@ setup_dialog (GtkBuilder *builder)
 {
 	GConfPropertyEditor *peditor;
 	GSList *mode_group;
-	GType mode_type = 0;
 	GConfClient *client;
 	gint port_value;
 	GtkWidget *location_box;
 	GtkCellRenderer *location_renderer;
 	GtkListStore *store;
-
-	mode_type = g_enum_register_static ("NetworkPreferencesProxyType",
-				            proxytype_values);
 
 	/* There's a bug in peditors that cause them to not initialize the entry
 	 * correctly. */
@@ -1161,17 +1239,15 @@ setup_dialog (GtkBuilder *builder)
 					"style", COL_STYLE, NULL);
 
 	/* Hackety hack */
+	gtk_label_set_use_markup (GTK_LABEL (GTK_BIN (gtk_builder_get_object (builder, "system_radiobutton"))->child), TRUE);
 	gtk_label_set_use_markup (GTK_LABEL (GTK_BIN (gtk_builder_get_object (builder, "none_radiobutton"))->child), TRUE);
 	gtk_label_set_use_markup (GTK_LABEL (GTK_BIN (gtk_builder_get_object (builder, "manual_radiobutton"))->child), TRUE);
 	gtk_label_set_use_markup (GTK_LABEL (GTK_BIN (gtk_builder_get_object (builder, "auto_radiobutton"))->child), TRUE);
 
 	/* Mode */
-	mode_group = gtk_radio_button_get_group (GTK_RADIO_BUTTON (gtk_builder_get_object (builder, "none_radiobutton")));
-	connect_sensitivity_signals (builder, mode_group);
-
-	peditor = GCONF_PROPERTY_EDITOR (gconf_peditor_new_select_radio_with_enum (NULL,
-			PROXY_MODE_KEY, mode_group, mode_type,
-			TRUE, NULL));
+ 	mode_set_initial_value (builder, client);
+ 	mode_group = gtk_radio_button_get_group (GTK_RADIO_BUTTON (gtk_builder_get_object (builder, "system_radiobutton")));
+	connect_mode_radiobuttons (builder, mode_group);
 
 	/* Use same proxy for all protocols */
 	peditor = GCONF_PROPERTY_EDITOR (gconf_peditor_new_boolean (NULL,
