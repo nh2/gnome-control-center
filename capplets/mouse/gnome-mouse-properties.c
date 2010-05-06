@@ -495,6 +495,10 @@ setup_dialog (GtkBuilder *dialog, GConfChangeSet *changeset)
 		gconf_peditor_new_boolean
 			(changeset, "/desktop/gnome/peripherals/touchpad/tap_to_click", WID ("tap_to_click_toggle"), NULL);
 		gconf_peditor_new_boolean
+			(changeset, "/desktop/gnome/peripherals/touchpad/tap_right_click", WID ("tap_right_click_toggle"), NULL);
+		gconf_peditor_new_boolean
+			(changeset, "/desktop/gnome/peripherals/touchpad/tap_middle_click", WID ("tap_middle_click_toggle"), NULL);
+		gconf_peditor_new_boolean
 			(changeset, "/desktop/gnome/peripherals/touchpad/horiz_scroll_enabled", WID ("horiz_scroll_toggle"), NULL);
 		radio = GTK_RADIO_BUTTON (WID ("scroll_disabled_radio"));
 		peditor = gconf_peditor_new_select_radio
